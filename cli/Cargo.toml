@@ -1,0 +1,13 @@
+[package]
+name = "hashassin"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+# Command-line parsing
+clap = { version = "4.5.28", features = ["env", "wrap_help", "derive"] }  
+# workspace dependency
+hashassin-core = { path = "../core" }
+log = "0.4"
+env_logger = "0.11.7" 
+
