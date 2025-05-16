@@ -6,14 +6,13 @@ use std::{
 };
 
 use crossbeam_channel::{Receiver, Sender};
-use scrypt::{
-    Scrypt,
-    password_hash::{PasswordHasher, SaltString, rand_core::OsRng},
-};
-use sha2::Sha256;
-use sha3::{Digest, Sha3_512};
 
-use crate::HashassinError;
+use crate::{
+    HashassinError,
+    algorithms::{
+        generate_md5_hash, generate_scrypt_hash, generate_sha3_512_hash, generate_sha256_hash,
+    },
+};
 
 /// Generates hashes for passwords read from an input file and writes the results to an output file.
 /// The hashing process is parallelized using multiple threads, with the specified algorithm used
@@ -164,109 +163,12 @@ fn generate_hash(
                             }
                         };
 
-                        // Padding with 0 to the password
-                        // let mut result_vec = vec![0]; // Start with a vector containing 0
-                        // result_vec.extend_from_slice(&hashed_password);
-                        // result_vec.push(0);
-                        // send to printer thread
-                        tx_printer.send(hashed_password).unwrap();
+                        let _ = tx_printer.send(hashed_password);
                     }
                 }
             })
         })
         .collect::<Vec<_>>()
-}
-
-/// Generates an MD5 hash from the provided password string.
-///
-/// # Arguments
-/// * `password` - A `String` containing the password to be hashed.
-///
-/// # Returns
-/// A `Vec<u8>` representing the MD5 hash of the password.
-///
-/// # Example
-/// ```rust
-/// let password = String::from("my_secret_password");
-/// let md5_hash = generate_md5_hash(password);
-/// ```
-/// # Note
-/// MD5 is a cryptographic hash function that is considered broken and unsuitable for further use in security-sensitive applications.
-fn generate_md5_hash(password: String) -> Vec<u8> {
-    let hash = md5::compute(&password);
-    // let hash_str = format!("{:x}", hash);
-    // print!("hashed passowrd {} {:?} ", password, hash_str);
-    hash.to_vec() // Convert to Vec<u8>
-}
-
-/// Generates a SHA-256 hash from the provided password string.
-///
-/// # Arguments
-/// * `password` - A `String` containing the password to be hashed.
-///
-/// # Returns
-/// A `Vec<u8>` representing the SHA-256 hash of the password.
-///
-/// # Example
-/// ```rust
-/// let password = String::from("my_secret_password");
-/// let sha256_hash = generate_sha256_hash(password);
-/// ```
-/// # Note
-/// SHA-256 is a member of the SHA-2 family and is considered a secure and commonly used hashing algorithm.
-fn generate_sha256_hash(password: String) -> Vec<u8> {
-    // let hash = sha256::digest(password);
-    // hash.as_bytes().to_vec() // Convert to Vec<u8>
-
-    let mut hasher = Sha256::new();
-    hasher.update(password);
-    hasher.finalize().to_vec() // Convert to Vec<u8>
-}
-
-/// Generates a SHA3-512 hash from the provided password string.
-///
-/// # Arguments
-/// * `password` - A `String` containing the password to be hashed.
-///
-/// # Returns
-/// A `Vec<u8>` representing the SHA3-512 hash of the password.
-///
-/// # Example
-/// ```rust
-/// let password = String::from("my_secret_password");
-/// let sha3_512_hash = generate_sha3_512_hash(password);
-/// ```
-/// # Note
-/// SHA3-512 is part of the SHA-3 family, which is a newer and more secure cryptographic hash function.
-fn generate_sha3_512_hash(password: String) -> Vec<u8> {
-    let mut hasher = Sha3_512::new();
-    hasher.update(password.as_bytes());
-    hasher.finalize().to_vec() // Convert to Vec<u8>
-}
-
-/// Generates an scrypt hash from the provided password string.
-///
-/// # Arguments
-/// * `password` - A `String` containing the password to be hashed.
-///
-/// # Returns
-/// A `Vec<u8>` representing the scrypt password hash in PHC string format.
-///
-/// # Example
-/// ```rust
-/// let password = String::from("my_secret_password");
-/// let scrypt_hash = generate_scrypt_hash(password);
-/// ```
-/// # Note
-/// Scrypt is a key derivation function designed to make brute-force attacks expensive. The resulting hash is in the PHC string format, starting with `$scrypt$`.
-/// The `SaltString` and `Scrypt` are used to handle salt and key derivation.
-fn generate_scrypt_hash(password: String) -> Vec<u8> {
-    let salt = SaltString::generate(&mut OsRng);
-
-    let password_hash = Scrypt.hash_password(password.as_bytes(), &salt).unwrap();
-
-    // Convert the password hash to bytes and return
-    password_hash.to_string().into_bytes()
 }
 
 /// Creates a thread that writes hashed passwords to a file.
@@ -283,7 +185,7 @@ fn generate_scrypt_hash(password: String) -> Vec<u8> {
 /// let out_file = String::from("hashed_passwords.txt");
 /// let (tx, rx) = mpsc::channel();
 /// let handle = create_print_to_file_thread(out_file, rx);
-/// tx.send(generate_sha256_hash(String::from("password1"))).unwrap();
+/// tx.send(generate_sha256_hash(String::from("password1")))
 /// ```
 /// # Note
 /// This function spawns a new thread that listens for `Vec<u8>` values and writes them to the specified file.
@@ -292,19 +194,19 @@ fn create_print_to_file_thread(
     out_file: String,
     rx_printer: Receiver<Vec<u8>>, // Updated to Vec<u8>
 ) -> thread::JoinHandle<()> {
-    let mut file = File::create(out_file).unwrap();
+    let mut file = match File::create(&out_file) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("Failed to create file {}: {}", out_file, e);
+            return thread::spawn(|| ());
+        }
+    };
     // let mut first_iteration = true;
     thread::spawn(move || {
         while let Ok(hashed_password) = rx_printer.recv() {
-            // if first_iteration {
-            // file.write_all(b"0");
-            file.write_all(&hashed_password).unwrap();
-            // file.write_all(b"0");
-            // continue;
-            // }
-            // file.write_all(&hashed_password).unwrap();
-            // first_iteration = false
-            // Write the cleaned bytes to the file
+            if let Err(e) = file.write_all(&hashed_password) {
+                eprintln!("Failed to write to file: {}", e);
+            }
         }
     })
 }

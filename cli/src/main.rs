@@ -1,19 +1,16 @@
-use clap::{Args, Parser, Subcommand, arg};
+#![deny(clippy::unwrap_used, clippy::expect_used)]
+use clap::{Args, Parser, Subcommand};
+use hashassin_client::handle_crack::handle_crack;
+use hashassin_client::handle_upload::handle_upload;
+use hashassin_core::crack::{crack_passwords, load_hashes, load_rainbow_table};
 use hashassin_core::dump_hashes;
+use hashassin_core::dump_rainbow_table;
 use hashassin_core::generate_hashes;
 use hashassin_core::generate_passwords;
+use hashassin_core::generate_rainbow_table;
+use hashassin_server::server;
 
 #[derive(Debug, Parser)]
-/// Main structure for command-line argument parsing using Clap.
-/// This struct is used to define the possible commands for the CLI, including `GenPasswords`, `GenHashes` and `DumpHashes`.
-/// It parses the arguments based on user input and triggers the corresponding actions.
-///
-/// # Example:
-///
-/// ```sh
-/// cargo run -- gen-passwords --chars 8 --threads 4 --num 1000
-/// cargo run -- gen-hashes --in-file input.txt --out-file output.txt --threads 2 --algorithm sha256
-/// ```
 struct MyArgs {
     #[command(subcommand)]
     command: Commands,
@@ -21,7 +18,6 @@ struct MyArgs {
 
 fn main() {
     let args = MyArgs::parse();
-    println!("{args:?}");
     match args.command {
         Commands::GenPasswords(args) => {
             if let Err(e) = generate_passwords::generate_passwords(
@@ -51,57 +47,133 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        Commands::GenRainbowTable(args) => {
+            if let Err(e) = generate_rainbow_table::generate_rainbow_table(
+                args.num_links,
+                args.threads,
+                args.out_file,
+                args.algorithm,
+                args.in_file,
+            ) {
+                eprintln!("Error generating rainbow table: {}", e);
+                std::process::exit(1);
+            }
+        }
+        Commands::DumpRainbowTable(args) => {
+            if let Err(e) = dump_rainbow_table::dump_rainbow_table(&args.in_file) {
+                eprintln!("Error dumping rainbow table: {}", e);
+                std::process::exit(1);
+            }
+        }
+        Commands::Crack(args) => {
+            match load_rainbow_table(&args.in_file) {
+                Ok(table) => match load_hashes(&args.hashes, &table.algorithm) {
+                    Ok(hashes) => {
+                        if let Err(e) = crack_passwords(
+                            table,
+                            hashes,
+                            args.threads,
+                            args.out_file.as_deref(), // pass Option<&str>
+                        ) {
+                            eprintln!("Error cracking passwords: {}", e);
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Error loading hashes: {}", e);
+                    }
+                },
+                Err(e) => {
+                    eprintln!("Error loading rainbow table: {}", e);
+                }
+            }
+        }
+        Commands::Server(args) => {
+            let async_threads = match args.async_threads {
+                Some(n) if n > 0 => n,
+                _ => 1,
+            };
+            let runtime = tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(async_threads)
+                .enable_all()
+                .build();
+
+            match runtime {
+                Ok(rt) => {
+                    let result = rt.block_on(server::start_server(
+                        args.bind,
+                        args.port,
+                        args.compute_threads,
+                        args.cache_size,
+                    ));
+
+                    match result {
+                        Ok(_) => println!("Server shut down gracefully."),
+                        Err(e) => eprintln!("Server encountered an error: {}", e),
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Failed to initialize Tokio runtime: {}", e);
+                }
+            }
+        }
+        Commands::Client(client_args) => {
+            match client_args.command {
+                ClientCommand::Upload(upload_args) => {
+                    // Handle upload command
+                    let result =
+                        handle_upload(&upload_args.server, &upload_args.in_file, &upload_args.name);
+                    if let Err(e) = result {
+                        eprintln!("Error uploading rainbow table: {}", e);
+                    }
+                }
+                ClientCommand::Crack(crack_client_args) => {
+                    // Handle crack command
+                    let result = handle_crack(
+                        &crack_client_args.server,
+                        &crack_client_args.in_file,
+                        crack_client_args.out_file.as_deref(),
+                    );
+                    if let Err(e) = result {
+                        eprintln!("Error cracking passwords: {}", e);
+                    }
+                }
+            }
+        }
     }
 }
 
-/// Enum representing the available subcommands for the CLI.
-/// This includes `GenPasswords` for password generation and `GenHashes` for generating hashes.
-/// Each subcommand has its own set of arguments defined in separate structs
 #[derive(Debug, Subcommand)]
 enum Commands {
-    // Clap crate maps GenPassword to actually gen-password args handling case and hyphenation automatically.
     GenPasswords(GenPasswordsArgs),
     GenHashes(GenHashesArgs),
     DumpHashes(DumpHashesArgs),
+    GenRainbowTable(GenRainbowTableArgs),
+    DumpRainbowTable(DumpRainbowTableArgs),
+    Crack(CrackArgs),
+    Server(ServerArgs),
+    Client(ClientArgs),
 }
 
-/// Arguments for the `gen-passwords` command.
-/// These include options for password length, output file location, number of threads, and number of passwords to generate.
 #[derive(Debug, Args)]
 struct GenPasswordsArgs {
-    /// Flag to read numbers to characters to be used in generated passwords
     #[arg(long, default_value_t = 4)]
     chars: u8,
-
     #[arg(long, default_value = "std")]
     out_file: String,
-
     #[arg(long, default_value_t = 1)]
     threads: usize,
-
-    /// Number of passwords to generate
     #[arg(long, default_value_t = 1)]
     num: usize,
 }
 
-/// Arguments for the `gen-hashes` command.
-/// These include options for the input file containing passwords, output file for hashes,
-/// number of threads, and the hashing algorithm to use.
 #[derive(Debug, Args)]
 struct GenHashesArgs {
-    /// Path to the file containing the plaintext passwords (one password per line)
     #[arg(long)]
     in_file: String,
-
-    /// Path to the output file where hashes will be written
     #[arg(long, default_value = "std")]
     out_file: String,
-
-    /// Number of threads to use for hash generation
     #[arg(long, default_value_t = 1)]
     threads: usize,
-
-    /// Hashing algorithm to use (e.g., "sha256", "md5")
     #[arg(long, default_value = "sha256")]
     algorithm: String,
 }
@@ -110,4 +182,107 @@ struct GenHashesArgs {
 struct DumpHashesArgs {
     #[arg(long)]
     in_file: String,
+}
+
+#[derive(Debug, Args)]
+struct GenRainbowTableArgs {
+    #[arg(long, default_value_t = 5)]
+    num_links: usize,
+    #[arg(long, default_value_t = 1)]
+    threads: usize,
+
+    #[arg(long, required = true)]
+    out_file: String,
+    #[arg(long, default_value = "md5")]
+    algorithm: String,
+
+    #[arg(long, required = true)]
+    in_file: String,
+}
+
+#[derive(Debug, Args)]
+struct DumpRainbowTableArgs {
+    #[arg(long, required = true)]
+    in_file: String,
+}
+
+#[derive(Debug, Args)]
+struct CrackArgs {
+    #[arg(long, required = true)]
+    in_file: String,
+
+    #[arg(long)]
+    hashes: String,
+
+    #[arg(long)]
+    out_file: Option<String>, // optional
+
+    #[arg(long, default_value_t = 1)]
+    threads: usize,
+}
+
+#[derive(Debug, Args)]
+struct ServerArgs {
+    #[arg(long, default_value_t = String::from("127.0.0.1"))]
+    bind: String,
+
+    #[arg(long, default_value_t = 2025)]
+    port: u16,
+
+    #[arg(long, default_value_t = 1)]
+    compute_threads: usize,
+
+    #[arg(long)]
+    async_threads: Option<usize>,
+
+    /// Optional cache size (max: i32::MAX bytes)
+    #[arg(long, value_parser = cache_size_within_i32)]
+    cache_size: Option<u32>,
+}
+
+fn cache_size_within_i32(val: &str) -> Result<u32, String> {
+    match val.parse::<u64>() {
+        Ok(v) if v <= i32::MAX as u64 => Ok(v as u32),
+        Ok(_) => Err(format!("cache-size must be <= {} bytes", i32::MAX)),
+        Err(e) => Err(format!("Invalid number: {}", e)),
+    }
+}
+
+#[derive(Debug, Args)]
+struct ClientArgs {
+    #[command(subcommand)]
+    command: ClientCommand,
+}
+
+#[derive(Debug, Subcommand)]
+enum ClientCommand {
+    /// Upload a rainbow table to the server
+    Upload(UploadArgs),
+
+    /// Request cracking of hashes file by server
+    Crack(CrackClientArgs),
+}
+
+#[derive(Debug, Args)]
+struct UploadArgs {
+    #[arg(long)]
+    server: String,
+
+    #[arg(long, value_name = "FILE")]
+    in_file: String,
+
+    #[arg(long)]
+    name: String,
+}
+
+#[derive(Debug, Args)]
+struct CrackClientArgs {
+    #[arg(long)]
+    server: String,
+
+    #[arg(long, value_name = "FILE")]
+    in_file: String,
+
+    #[arg(long, value_name = "FILE")]
+    out_file: Option<String>,
 }

@@ -212,7 +212,6 @@ fn create_print_to_file_thread(
     };
 
     // let writer = BufWriter::new(file);
-    // let mut file = File::options().append(true).open(out_file).unwrap();
     Ok(thread::spawn(move || {
         // let mut counter = 0;
         while let Ok(msg) = rx_printer.recv() {

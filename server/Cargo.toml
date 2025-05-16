@@ -1,0 +1,11 @@
+[package]
+name = "hashassin-server"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+thiserror = "2.0.12"
+dashmap = "6.1.0"
+hex = "0.4"
+hashassin-core = { path = "../core" }
+tokio = { version = "1", features = ["full"] }
